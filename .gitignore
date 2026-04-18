@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+
+# Vue / Node
+node_modules/
+frontend/dist/
+npm-debug.log
+yarn-error.log
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# EVE specific
+data/
+*.sqlite
+output/user_data.sqlite
+output/debug*
+
+# Exe / Builds
+*.exe
+*.spec
+build_log.txt
+out*.txt
+roles_output.txt
