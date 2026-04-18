@@ -1,4 +1,4 @@
-# EVE 资产管理平台 (EVE Asset Manager)
+# EVE 资产管理工具 (EVE Asset Manager)
 
 (苦主长期苦于EVE的超多账号以及军团机库查找物品的烦恼，于是使用Gemini做了一个基于官方ESI资产接口的本地化的资产管理系统)
 为 EVE Online (国服/星战前夜：晨曦) 制作的本地化资产管理与检视工具。
