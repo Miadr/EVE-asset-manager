@@ -39,7 +39,8 @@ def build():
         "--hidden-import", "PIL",
         # Windows 分隔符是分号 ;
         "--add-data", "frontend/dist;dist",
-        "--add-data", "output/eve_universe.sqlite;data",
+        "--add-data", "data/eve_universe_serenity.sqlite;data",
+        "--add-data", "data/eve_universe_tranquility.sqlite;data",
         "--icon", "frontend/dist/favicon.ico",
         "launcher.py"
     ]

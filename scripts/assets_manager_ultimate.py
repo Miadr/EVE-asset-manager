@@ -98,8 +98,25 @@ class TokenManager:
             return None, name
 
 class UnifiedAssetManager:
-    def __init__(self):
+    def __init__(self, args=None):
         if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR, exist_ok=True)
+        self.server = getattr(args, 'server', 'serenity') if args else 'serenity'
+        global AUTH_DB, SDE_DB, ESI_BASE, AUTH_URL, CLIENT_ID
+        if self.server == 'tranquility':
+            AUTH_DB = os.path.join(OUTPUT_DIR, 'user_data_tranquility.sqlite')
+            SDE_DB = os.path.join(OUTPUT_DIR, 'eve_universe_tranquility.sqlite')
+            ESI_BASE = "https://esi.evetech.net/latest"
+            AUTH_URL = "https://login.eveonline.com/v2/oauth/token"
+            CLIENT_ID = "c5c106a0a3f04a8e91329d24ce762825"
+            self.ds = "?datasource=tranquility"
+        else:
+            AUTH_DB = os.path.join(OUTPUT_DIR, 'user_data_serenity.sqlite')
+            SDE_DB = os.path.join(OUTPUT_DIR, 'eve_universe_serenity.sqlite')
+            ESI_BASE = "https://ali-esi.evepc.163.com/latest"
+            AUTH_URL = "https://login.evepc.163.com/v2/oauth/token"
+            CLIENT_ID = "bc90aa496a404724a93f41b4f4e97761"
+            self.ds = "?datasource=serenity"
+            
         self.token_mgr = TokenManager()
         
         self.session = requests.Session()
@@ -179,7 +196,7 @@ class UnifiedAssetManager:
 
     def _resolve_corp_name(self, corp_id):
         try:
-            r = self.session.get(f"{ESI_BASE}/corporations/{corp_id}/?datasource=serenity", timeout=5)
+            r = self.session.get(f"{ESI_BASE}/corporations/{corp_id}/{self.ds}", timeout=5)
             if r.status_code == 200: return r.json().get('name', f'Corp {corp_id}')
         except: pass
         return f'Corp {corp_id}'
@@ -196,12 +213,12 @@ class UnifiedAssetManager:
                 if not token: continue
                 is_director = 0; corp_id = 0
                 try:
-                    pub = self.session.get(f"{ESI_BASE}/characters/{cid}/?datasource=serenity", timeout=5)
+                    pub = self.session.get(f"{ESI_BASE}/characters/{cid}/{self.ds}", timeout=5)
                     if pub.status_code == 200: corp_id = pub.json().get('corporation_id', 0)
-                    roles_r = self.session.get(f"{ESI_BASE}/characters/{cid}/roles/?datasource=serenity", headers={"Authorization": f"Bearer {token}"}, timeout=5)
+                    roles_r = self.session.get(f"{ESI_BASE}/characters/{cid}/roles/{self.ds}", headers={"Authorization": f"Bearer {token}"}, timeout=5)
                     if roles_r.status_code in [401, 403]:
                          token, _ = self.token_mgr.force_refresh(cid)
-                         if token: roles_r = self.session.get(f"{ESI_BASE}/characters/{cid}/roles/?datasource=serenity", headers={"Authorization": f"Bearer {token}"}, timeout=5)
+                         if token: roles_r = self.session.get(f"{ESI_BASE}/characters/{cid}/roles/{self.ds}", headers={"Authorization": f"Bearer {token}"}, timeout=5)
                     if roles_r.status_code == 200 and 'Director' in roles_r.json().get('roles', []): is_director = 1
                 except: pass
                 upd = get_db_conn()
@@ -227,17 +244,17 @@ class UnifiedAssetManager:
             if not token: logger.warning(f"Skipping {name} (No Token)"); continue
             logger.info(f"Processing ({idx}/{total}): {name}")
             
-            char_assets = self._fetch_pages_serial(f"{ESI_BASE}/characters/{char_id}/assets/?datasource=serenity", token, char_id, name)
+            char_assets = self._fetch_pages_serial(f"{ESI_BASE}/characters/{char_id}/assets/{self.ds}", token, char_id, name)
             if char_assets is not None:
-                char_bp = self._fetch_pages_serial(f"{ESI_BASE}/characters/{char_id}/blueprints/?datasource=serenity", token, char_id, name)
+                char_bp = self._fetch_pages_serial(f"{ESI_BASE}/characters/{char_id}/blueprints/{self.ds}", token, char_id, name)
                 self._process_and_write(char_id, char_assets, char_bp or [], token, is_corp=False, owner_name=name)
 
             if is_director and corp_id and corp_id not in self.processed_corps:
                 corp_name = self._resolve_corp_name(corp_id)
                 logger.info(f"Processing Corp: {corp_name}")
-                corp_assets = self._fetch_pages_serial(f"{ESI_BASE}/corporations/{corp_id}/assets/?datasource=serenity", token, char_id, corp_name)
+                corp_assets = self._fetch_pages_serial(f"{ESI_BASE}/corporations/{corp_id}/assets/{self.ds}", token, char_id, corp_name)
                 if corp_assets is not None:
-                    corp_bp = self._fetch_pages_serial(f"{ESI_BASE}/corporations/{corp_id}/blueprints/?datasource=serenity", token, char_id, corp_name)
+                    corp_bp = self._fetch_pages_serial(f"{ESI_BASE}/corporations/{corp_id}/blueprints/{self.ds}", token, char_id, corp_name)
                     self._process_and_write(corp_id, corp_assets, corp_bp or [], token, is_corp=True, owner_name=corp_name)
                     self.processed_corps.add(corp_id)
 
@@ -264,7 +281,7 @@ class UnifiedAssetManager:
 
         if valid_ids:
             endpoint = "corporations" if is_corp else "characters"
-            url = f"{ESI_BASE}/{endpoint}/{owner_id}/assets/names/?datasource=serenity"
+            url = f"{ESI_BASE}/{endpoint}/{owner_id}/assets/names/{self.ds}"
             try:
                 chunk_size = 1000
                 chunks = [valid_ids[i:i+chunk_size] for i in range(0, len(valid_ids), chunk_size)]
@@ -319,23 +336,51 @@ class UnifiedAssetManager:
             for item in self.asset_map.values():
                 if item['location_id'] in unknowns: loc_owners.setdefault(item['location_id'], set()).add(item['owner_id'])
 
+            # Fallback list of ALL known valid tokens
+            all_tokens = []
+            try:
+                for k,v in self.token_mgr.__dict__.get('_cache', {}).items(): pass # not accessible directly
+                all_raw = conn.execute("SELECT character_id FROM auth_tokens").fetchall()
+                all_tokens = [r[0] for r in all_raw]
+            except: pass
+
             new_cache = []
             for i, sid in enumerate(unknowns, 1):
-                struct_name = f"Unknown Structure {sid}"
+                struct_name = f"Unknown Location {sid}"
                 should_cache = False 
-                owners = sorted(loc_owners.get(sid, []), key=lambda x: 1 if x > 90000000 else 0)
-                for oid in owners:
-                    token, _ = self.token_mgr.get_token(oid)
-                    if not token: continue
+                
+                if 60000000 <= sid < 64000000:
                     try:
-                        r = self.session.get(f"{ESI_BASE}/universe/structures/{sid}/?datasource=serenity", headers={"Authorization": f"Bearer {token}"}, timeout=5)
-                        if r.status_code == 200: struct_name = r.json().get('name'); should_cache = True; break
-                        elif r.status_code in [401, 403]:
-                             new_token, _ = self.token_mgr.force_refresh(oid)
-                             if new_token:
-                                 r = self.session.get(f"{ESI_BASE}/universe/structures/{sid}/?datasource=serenity", headers={"Authorization": f"Bearer {new_token}"}, timeout=5)
-                                 if r.status_code == 200: struct_name = r.json().get('name'); should_cache = True; break
+                        r = self.session.get(f"{ESI_BASE}/universe/stations/{sid}/{self.ds}", timeout=5)
+                        if r.status_code == 200:
+                            struct_name = r.json().get('name', struct_name)
+                            should_cache = True
                     except: pass
+                elif 30000000 <= sid < 33000000:
+                    try:
+                        r = self.session.get(f"{ESI_BASE}/universe/systems/{sid}/{self.ds}", timeout=5)
+                        if r.status_code == 200:
+                            struct_name = r.json().get('name', struct_name)
+                            should_cache = True
+                    except: pass
+                else:
+                    owners = sorted(list(loc_owners.get(sid, set())), key=lambda x: 1 if x > 90000000 else 0)
+                    for fallback_char in all_tokens:
+                        if fallback_char not in owners: owners.append(fallback_char)
+                        
+                    for oid in owners:
+                        token, _ = self.token_mgr.get_token(oid)
+                        if not token: continue
+                        try:
+                            r = self.session.get(f"{ESI_BASE}/universe/structures/{sid}/{self.ds}", headers={"Authorization": f"Bearer {token}"}, timeout=5)
+                            if r.status_code == 200: struct_name = r.json().get('name'); should_cache = True; break
+                            elif r.status_code in [401, 403]:
+                                 new_token, _ = self.token_mgr.force_refresh(oid)
+                                 if new_token:
+                                     r = self.session.get(f"{ESI_BASE}/universe/structures/{sid}/{self.ds}", headers={"Authorization": f"Bearer {new_token}"}, timeout=5)
+                                     if r.status_code == 200: struct_name = r.json().get('name'); should_cache = True; break
+                        except: pass
+                
                 self.location_names[sid] = struct_name
                 if should_cache: new_cache.append((sid, struct_name))
 

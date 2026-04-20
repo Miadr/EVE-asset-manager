@@ -12,15 +12,27 @@ from pypinyin import pinyin, lazy_pinyin, Style
 from logger_config import setup_logger
 logger = setup_logger("UniverseSync", "worker_universe.log")
 
-# --- 配置区域 ---
-# 硬编码路径
-OUTPUT_DIR = os.path.join(os.getcwd(), 'data') # 设置为当前工作目录下的 data 文件夹
-DB_PATH = os.path.join(OUTPUT_DIR, 'eve_universe.sqlite')
+# --- 配置区域（默认值，由 argparse 覆盖） ---
+OUTPUT_DIR = os.path.join(os.getcwd(), 'data')
+DB_PATH = os.path.join(OUTPUT_DIR, 'eve_universe_serenity.sqlite')
 
 ESI_BASE = "https://ali-esi.evepc.163.com/latest" 
 DATASOURCE = "serenity"
-USER_AGENT = "EVE_Universe_Sync_Smart_v2.1"
+USER_AGENT = "EVE_Universe_Sync_Smart_v2.5_Ops"
 CHUNK_SIZE = 1000 
+
+import argparse
+
+def setup_environment(server):
+    global DB_PATH, ESI_BASE, DATASOURCE
+    if server == "tranquility":
+        DB_PATH = os.path.join(OUTPUT_DIR, 'eve_universe_tranquility.sqlite')
+        ESI_BASE = "https://esi.evetech.net/latest"
+        DATASOURCE = "tranquility"
+    else:
+        DB_PATH = os.path.join(OUTPUT_DIR, 'eve_universe_serenity.sqlite')
+        ESI_BASE = "https://ali-esi.evepc.163.com/latest"
+        DATASOURCE = "serenity"
 
 def get_retry_session():
     session = requests.Session()
@@ -112,9 +124,16 @@ def fetch_type_detail(session, type_id):
     except: pass
     return None
 
-def main():
+def main(args=None):
+    if args is None:
+        parser = argparse.ArgumentParser(description="EVE Universe Sync Script")
+        parser.add_argument("--server", choices=["serenity", "tranquility"], default="serenity")
+        args = parser.parse_args()
+
+    setup_environment(args.server)
+
     start_time = time.time()
-    logger.info("=== Universe Sync Started ===")
+    logger.info(f"=== Universe Sync Started: {args.server} ===")
     
     session = get_retry_session()
     conn = get_db_connection()

@@ -35,14 +35,16 @@ yarn-error.log
 # IDEs
 .idea/
 .vscode/
+.gemini/
 *.swp
 *.swo
 
 # EVE specific
 data/
+output/
 *.sqlite
-output/user_data.sqlite
-output/debug*
+eve-online-static-data-*-yaml/
+get_schema.py
 
 # Exe / Builds
 *.exe

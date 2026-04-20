@@ -1,10 +1,18 @@
 <template>
   <el-container class="layout-container">
     <el-header class="header">
-      <div class="logo">
-        <el-icon class="logo-icon"><Platform /></el-icon>
-        <span class="logo-text">EVE 资产管理系统 V1.1</span>
-        <span class="author-credits">By Sep. (Powered by Gemini)</span>
+      <div class="logo-container" style="display: flex; align-items: center;">
+        <div class="logo">
+          <div style="display: flex; align-items: center;">
+            <el-icon class="logo-icon"><Platform /></el-icon>
+            <span class="logo-text">EVE 资产管理系统 V2.0</span>
+          </div>
+          <div style="font-size: 11px; color: #7c7f82; margin-top: -4px; margin-left: 32px; letter-spacing: 0.5px;">By NoSep. Powered by Gemini</div>
+        </div>
+        <el-radio-group v-model="activeServer" size="small" @change="switchServer" style="margin-left: 20px;" class="server-switch">
+          <el-radio-button value="serenity" label="serenity">晨曦 (国服)</el-radio-button>
+          <el-radio-button value="tranquility" label="tranquility">宁静 (欧服)</el-radio-button>
+        </el-radio-group>
       </div>
       
       <div class="top-search-area">
@@ -146,21 +154,27 @@
           <span class="status-text">
             本页 {{ tableData.length }} 条记录
             <el-divider direction="vertical" />
-            最近资产刷新时间：{{ dbMTime }}
+            最新资产同步时间：{{ dbMTime }}
           </span>
           <el-pagination background small layout="prev, pager, next, jumper, sizes" :total="total" v-model:current-page="query.page" :page-size="query.limit" :page-sizes="[100, 200, 500]" @current-change="loadData" @size-change="loadData" />
         </div>
       </el-main>
     </el-container>
 
-    <el-drawer v-model="controlPanelVisible" title="系统控制台" size="450px" custom-class="dark-drawer">
+    <el-drawer v-model="controlPanelVisible" size="450px" custom-class="dark-drawer">
+      <template #header>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size: 18px; color: #fff; font-weight: 500;">系统控制台</span>
+          <el-switch v-if="activeServer === 'tranquility'" v-model="lang" active-text="中" inactive-text="En" active-value="zh" inactive-value="en" @change="switchLang" inline-prompt style="--el-switch-on-color: #13ce66; --el-switch-off-color: #409eff"></el-switch>
+        </div>
+      </template>
       <div class="panel-section">
         <h3>维护工具</h3>
-        <el-button type="danger" plain size="small" style="width:100%; margin-bottom:10px" @click="clearLoginCache">第一步：清除网易登录缓存</el-button>
+        <el-button v-if="activeServer === 'serenity'" type="danger" plain size="small" style="width:100%; margin-bottom:10px" @click="clearLoginCache">第一步：清除网易登录缓存</el-button>
         <div style="margin-bottom:8px; text-align:center">
-          <a :href="authLink" target="_blank" class="auth-link-btn">第二步：获取 ESI 授权链接</a>
+          <a :href="authLink" target="_blank" class="auth-link-btn">{{ activeServer === 'serenity' ? '第二步：获取 ESI 授权链接' : '第一步：获取授权链接' }}</a>
         </div>
-        <el-input v-model="authUrlInput" placeholder="第三步：粘贴跳转后的 URL..." :rows="2" type="textarea" />
+        <el-input v-model="authUrlInput" :placeholder="activeServer === 'serenity' ? '第三步：粘贴跳转后的 URL...' : '第二步：粘贴跳转后的 URL...'" :rows="2" type="textarea" />
         <el-button type="primary" style="margin-top:8px; width:100%" @click="submitAuth">提交验证</el-button>
       </div>
       <div class="panel-section">
@@ -226,6 +240,26 @@
         </el-table-column>
       </el-table>
     </el-dialog>
+
+    <el-dialog v-model="welcomeVisible" title="系统已就绪" width="550px" class="dark-dialog welcome-dialog" :show-close="false" :close-on-click-modal="false" :close-on-press-escape="false" center>
+      <div style="text-align: center; margin-bottom: 25px; color: #a1a1aa; line-height: 1.6;">
+        <p>系统已成功上线。<br>请选择使用的服务器：</p>
+      </div>
+      <div style="display: flex; gap: 24px; justify-content: center; padding-bottom: 10px;">
+        <el-button type="primary" size="large" @click="chooseServer('serenity')" style="width: 220px; height: 110px; font-size: 18px; border-radius: 12px; background: linear-gradient(135deg, #1f2937, #374151); border-color: #4b5563;">
+          <div style="display:flex; flex-direction: column; align-items: center; gap: 12px;">
+            <span style="font-weight: bold; color: #60a5fa; letter-spacing: 1px;">晨曦 Serenity</span>
+            <span style="font-size: 13px; color: #9ca3af;">国服数据库</span>
+          </div>
+        </el-button>
+        <el-button type="primary" size="large" @click="chooseServer('tranquility')" style="width: 220px; height: 110px; font-size: 18px; border-radius: 12px; background: linear-gradient(135deg, #1e1b4b, #312e81); border-color: #4338ca;">
+           <div style="display:flex; flex-direction: column; align-items: center; gap: 12px;">
+            <span style="font-weight: bold; color: #a5b4fc; letter-spacing: 1px;">宁静 Tranquility</span>
+            <span style="font-size: 13px; color: #818cf8;">欧服数据库</span>
+          </div>
+        </el-button>
+      </div>
+    </el-dialog>
   </el-container>
 </template>
 
@@ -233,7 +267,7 @@
 import { ref, reactive, onMounted, computed, watch } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Search, Platform, Menu, Location, Box, Edit, View, OfficeBuilding, ArrowDown, Delete, Loading, Check } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -253,7 +287,73 @@ const locationFilterText = ref('')
 const authUrlInput = ref('')
 const dbMTime = ref('探测中...')
 
-const authLink = "https://login.evepc.163.com/v2/oauth/authorize?response_type=code&redirect_uri=https://ali-esi.evepc.163.com/ui/oauth2-redirect.html&client_id=bc90aa496a404724a93f41b4f4e97761&scope=esi-assets.read_assets.v1%20esi-assets.read_corporation_assets.v1%20esi-characters.read_blueprints.v1%20esi-corporations.read_blueprints.v1%20esi-characters.read_corporation_roles.v1%20esi-location.read_location.v1%20esi-location.read_ship_type.v1%20esi-universe.read_structures.v1&state=mystate&realm=ESI&device_id=eve_asset_tool_v3"
+const activeServer = ref(localStorage.getItem('eve_server') || 'serenity')
+const lang = ref(localStorage.getItem('eve_tranquility_lang') || 'en')
+
+const welcomeVisible = ref(false)
+const chooseServer = (srv) => {
+  activeServer.value = srv
+  localStorage.setItem('eve_server', srv)
+  sessionStorage.setItem('server_chosen', '1')
+  welcomeVisible.value = false
+  initAppSequence()
+}
+
+const switchServer = () => {
+  localStorage.setItem('eve_server', activeServer.value)
+  window.location.reload()
+}
+
+const switchLang = () => {
+  localStorage.setItem('eve_tranquility_lang', lang.value)
+  window.location.reload()
+}
+
+axios.interceptors.request.use(config => {
+  if (!config.params) config.params = {};
+  if (config.method === 'get') {
+     if (!config.params.server) config.params.server = activeServer.value;
+     if (!config.params.lang) config.params.lang = lang.value;
+  }
+  if (config.method === 'post' || config.method === 'delete') {
+     if (config.data && typeof config.data === 'object' && !(config.data instanceof FormData)) {
+         config.data.server = activeServer.value;
+     } else if (!config.params.server) {
+         config.params.server = activeServer.value;
+     }
+  }
+  return config;
+});
+
+const authLink = ref("")
+const scopes = "esi-assets.read_assets.v1 esi-assets.read_corporation_assets.v1 esi-characters.read_blueprints.v1 esi-corporations.read_blueprints.v1 esi-characters.read_corporation_roles.v1 esi-location.read_location.v1 esi-location.read_ship_type.v1 esi-universe.read_structures.v1".replace(/ /g, '%20')
+
+const generateRandomString = (length) => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+    let result = '';
+    const randomArray = new Uint8Array(length);
+    crypto.getRandomValues(randomArray);
+    for (let i = 0; i < length; i++) {
+        result += chars[randomArray[i] % chars.length];
+    }
+    return result;
+}
+
+const setupAuthLink = async () => {
+    if (activeServer.value === 'tranquility') {
+        const verifier = generateRandomString(64);
+        localStorage.setItem('pkce_verifier', verifier);
+        
+        const encoder = new TextEncoder();
+        const data = encoder.encode(verifier);
+        const hash = await crypto.subtle.digest('SHA-256', data);
+        let challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        
+        authLink.value = `https://login.eveonline.com/v2/oauth/authorize?response_type=code&redirect_uri=http://localhost:8001/api/auth/callback/tranquility&client_id=c5c106a0a3f04a8e91329d24ce762825&scope=${scopes}&state=mystate&code_challenge=${challenge}&code_challenge_method=S256`
+    } else {
+        authLink.value = "https://login.evepc.163.com/v2/oauth/authorize?response_type=code&redirect_uri=https://ali-esi.evepc.163.com/ui/oauth2-redirect.html&client_id=bc90aa496a404724a93f41b4f4e97761&scope=" + scopes + "&state=mystate&realm=ESI&device_id=eve_asset_tool_v3"
+    }
+}
 
 const query = reactive({ q: '', owner_ids: [], category_id: null, location_name: null, include_fitted: false, page: 1, limit: 100 })
 
@@ -349,7 +449,9 @@ const syncTask = async (type) => {
 const submitAuth = async () => {
   if (!authUrlInput.value) return
   try {
-    const res = await axios.post('/api/auth/add', { url: authUrlInput.value })
+    const payload = { url: authUrlInput.value, server: activeServer.value }
+    if (activeServer.value === 'tranquility') payload.code_verifier = localStorage.getItem('pkce_verifier')
+    const res = await axios.post('/api/auth/add', payload)
     ElMessage.success(res.data.message); 
     authUrlInput.value = ''; 
     loadAuthChars()
@@ -388,7 +490,12 @@ const canOpen = (row) => {
   return false
 }
 
-const getOwnerIcon = (id, is_corp) => `https://image.evepc.163.com/${is_corp?'Corporation':'Character'}/${id}_64.${is_corp?'png':'jpg'}`
+const getOwnerIcon = (id, is_corp) => {
+  if (activeServer.value === 'tranquility') {
+    return is_corp ? `https://images.evetech.net/corporations/${id}/logo?size=64` : `https://images.evetech.net/characters/${id}/portrait?size=64`
+  }
+  return `https://image.evepc.163.com/${is_corp?'Corporation':'Character'}/${id}_64.${is_corp?'png':'jpg'}`
+}
 
 const checkUniversePrompt = () => {
   if (!sessionStorage.getItem('universePrompted')) {
@@ -405,26 +512,43 @@ const checkUniversePrompt = () => {
   }
 }
 
-onMounted(() => { 
-  document.documentElement.classList.add('dark'); 
+const initAppSequence = () => {
   loadFilters(); 
   loadData(); 
   loadAuthChars();
+  setupAuthLink();
   
-  if (!localStorage.getItem('first_time_tutorial')) {
-    localStorage.setItem('first_time_tutorial', '1');
+  const tutKey = `first_time_tutorial_${activeServer.value}`;
+  if (!localStorage.getItem(tutKey)) {
+    localStorage.setItem(tutKey, '1');
     let countdown = 8;
-    ElMessageBox.alert(
-      `<div style="line-height: 1.8; font-size: 14px;">
-        <p>1. 请点击右上角<b>控制台</b>按钮添加所需管理资产角色的 ESI 授权。如该角色为军团总监，则将同时自动同步军团机库资产。</p>
+    
+    // 按服分别设定警告内容，这里您可以后续自行随意更改具体文案
+    let warningHTML = "";
+    if (activeServer.value === 'serenity') {
+        warningHTML = `<div style="line-height: 1.8; font-size: 14px;">
+        <p>1. 请点击右上角<b>控制台</b>按钮添加所需晨曦管理资产角色的 ESI 授权。如该角色为军团总监，则将同时自动同步军团机库资产。</p>
         <p>2. <strong style="color: #f56c6c; font-size: 16px;">务必妥善保管</strong>本程序同级目录下生成的 <b>data</b> 数据库文件夹，内包含您的 ESI 授权 Token 以及所有资产信息，<strong style="color: #f56c6c; font-size: 16px;">请勿随意与他人分享</strong>。</p>
         <div style="margin-top: 15px; padding: 10px; background: rgba(230, 162, 60, 0.1); border-left: 4px solid #e6a23c; color: #e6a23c; font-size: 13px;">
           <b style="font-size: 14px;">关于国服特有缓存与维护机制：</b><br>
           官方 ESI 资产接口针对游戏内的新操作存在约<b>一小时</b>的防刷缓存限制期。如果您刚才整理过机库但在这刷新没变化，请一小时后再做同步。<br><br>
-          同时，近期疑似网易官方会在<b>每天早上 9:00 - 12:00 左右掐断所有人的拉取权限</b>进行每日维护（期间拉取将被判作为 0 资产直接失败）。请在其他时间同步。(详情查看:https://ali-esi.evepc.163.com/ui/?version=latest#/)
+          同时，近期疑似网易官方会在<b>每天早上 9:00 - 12:00 左右掐断所有人的拉取权限</b>进行每日维护（期间拉取将被判作为 0 资产直接失败）。请在其他时间同步。
         </div>
-      </div>`,
-      '欢迎使用 EVE 资产管理平台',
+      </div>`;
+    } else {
+        warningHTML = `<div style="line-height: 1.8; font-size: 14px;">
+        <p>1. 请点击右上角<b>控制台</b>按钮添加宁静服角色的 ESI 授权。</p>
+        <p>2. <strong style="color: #f56c6c; font-size: 16px;">务必妥善保管</strong>本程序同级目录下生成的 <b>data</b> 数据库文件夹，内包含您的 ESI 授权 Token 以及所有资产信息，<strong style="color: #f56c6c; font-size: 16px;">请勿随意与他人分享</strong>。</p>
+        <div style="margin-top: 15px; padding: 10px; background: rgba(230, 162, 60, 0.1); border-left: 4px solid #e6a23c; color: #e6a23c; font-size: 13px;">
+          <b style="font-size: 14px;">关于国际服说明：</b><br>
+          由于宁静(欧服)CCP服务器在海外，所以授权以及同步资产和物品库的速度可能较慢，请耐心等待~
+        </div>
+      </div>`;
+    }
+    
+    ElMessageBox.alert(
+      warningHTML,
+      `欢迎接入 ${activeServer.value === 'serenity' ? '晨曦' : '宁静'} 数据链`,
       {
         dangerouslyUseHTMLString: true,
         confirmButtonText: `我已了解 (${countdown}s)`,
@@ -457,10 +581,24 @@ onMounted(() => {
   } else {
     checkUniversePrompt();
   }
+}
+
+onMounted(() => { 
+  document.documentElement.classList.add('dark'); 
+  
+  if (!sessionStorage.getItem('server_chosen')) {
+    welcomeVisible.value = true;
+  } else {
+    initAppSequence();
+  }
 })
 </script>
 
 <style scoped>
+:global(.el-radio-button__inner) { background-color: #1a1b1d !important; border-color: #333 !important; color: #aaa !important; }
+:global(.el-radio-button__original-radio:checked+.el-radio-button__inner) { background-color: #626aef !important; color: white !important; box-shadow: -1px 0 0 0 #626aef !important; border-color: #626aef !important; }
+.server-switch { align-items: center; }
+
 .layout-container { height: 100vh; background-color: #0b0c0e; color: #cfd3dc; font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 .header { background-color: #151618; border-bottom: 1px solid #2a2b2d; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 70px; z-index: 10; }
 .logo { font-size: 18px; font-weight: bold; color: #409eff; display: flex; align-items: center; gap:10px; min-width: 200px;}
