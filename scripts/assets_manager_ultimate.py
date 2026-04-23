@@ -322,12 +322,34 @@ class UnifiedAssetManager:
                 cached = {row[0]: row[1] for row in cur.fetchall()}
             except: pass
 
+            # 检查 SDE 中是否存在 staStations / mapSolarSystems 表
+            sde_has_stations = False
+            sde_has_systems = False
+            try:
+                conn.execute("SELECT 1 FROM sde.staStations LIMIT 1")
+                sde_has_stations = True
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("SELECT 1 FROM sde.mapSolarSystems LIMIT 1")
+                sde_has_systems = True
+            except sqlite3.OperationalError:
+                pass
+
             c = conn.cursor()
             for loc_id in all_locs:
-                c.execute("SELECT stationName FROM sde.staStations WHERE stationID=?", (loc_id,))
-                if res := c.fetchone(): self.location_names[loc_id] = res[0]; continue
-                c.execute("SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID=?", (loc_id,))
-                if res := c.fetchone(): self.location_names[loc_id] = res[0]; continue
+                if sde_has_stations:
+                    try:
+                        c.execute("SELECT stationName FROM sde.staStations WHERE stationID=?", (loc_id,))
+                        if res := c.fetchone(): self.location_names[loc_id] = res[0]; continue
+                    except sqlite3.OperationalError:
+                        pass
+                if sde_has_systems:
+                    try:
+                        c.execute("SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID=?", (loc_id,))
+                        if res := c.fetchone(): self.location_names[loc_id] = res[0]; continue
+                    except sqlite3.OperationalError:
+                        pass
                 if loc_id in cached: self.location_names[loc_id] = cached[loc_id]; continue
                 unknowns.append(loc_id)
 
