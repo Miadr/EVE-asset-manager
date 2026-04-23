@@ -135,7 +135,7 @@ class ProgressHandler(logging.Handler):
             sync_status[self.key]["has_error"] = True
 
 # 挂载自定义钩子截获底层旧脚本输出
-for key, logger_name in [("assets", "AssetWorker"), ("universe", "UniSync")]:
+for key, logger_name in [("assets", "AssetWorker"), ("universe", "UniverseSync")]:
     l = logging.getLogger(logger_name)
     h = ProgressHandler(key)
     h.setFormatter(logging.Formatter('%(message)s'))
@@ -157,7 +157,7 @@ def run_script_process(script_type, server):
             am.UnifiedAssetManager(args=am_args).run()
         elif script_type == 'universe':
             import argparse
-            us_args = argparse.Namespace(server=server)
+            us_args = argparse.Namespace(server=server, threads=50, min_threads=2, fail_rate=0.3)
             uss.main(us_args)
         logger.info(f"Script process finished: {script_type}")
     except Exception as e:
