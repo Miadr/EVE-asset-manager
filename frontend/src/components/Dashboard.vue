@@ -11,6 +11,7 @@
         </div>
         <el-radio-group v-model="activeServer" size="small" @change="switchServer" style="margin-left: 20px;" class="server-switch">
           <el-radio-button value="serenity" label="serenity">晨曦 (国服)</el-radio-button>
+          <el-radio-button value="infinity" label="infinity">曙光 (国服)</el-radio-button>
           <el-radio-button value="tranquility" label="tranquility">宁静 (欧服)</el-radio-button>
         </el-radio-group>
       </div>
@@ -96,7 +97,7 @@
                <div class="icon-col">
                  <span v-if="!scope.row.is_singleton && scope.row.quantity > 1" class="qty-modern">{{ formatQty(scope.row.quantity) }}</span>
                  <div class="img-box">
-                   <el-image :src="`https://image.evepc.163.com/Type/${scope.row.type_id}_64.png`" loading="lazy" class="main-icon" />
+                   <img :src="getTypeImageUrl(scope.row.type_id, 64)" loading="lazy" class="main-icon" @error="handleTypeImageError($event, scope.row.type_id)" />
                    <div v-if="scope.row.is_blueprint" class="bp-tag">BP</div>
                  </div>
                </div>
@@ -170,11 +171,11 @@
       </template>
       <div class="panel-section">
         <h3>维护工具</h3>
-        <el-button v-if="activeServer === 'serenity'" type="danger" plain size="small" style="width:100%; margin-bottom:10px" @click="clearLoginCache">第一步：清除网易登录缓存</el-button>
+        <el-button v-if="activeServer === 'serenity' || activeServer === 'infinity'" type="danger" plain size="small" style="width:100%; margin-bottom:10px" @click="clearLoginCache">第一步：清除网易登录缓存</el-button>
         <div style="margin-bottom:8px; text-align:center">
-          <a :href="authLink" target="_blank" class="auth-link-btn">{{ activeServer === 'serenity' ? '第二步：获取 ESI 授权链接' : '第一步：获取授权链接' }}</a>
+          <a :href="authLink" target="_blank" class="auth-link-btn">{{ (activeServer === 'serenity' || activeServer === 'infinity') ? '第二步：获取 ESI 授权链接' : '第一步：获取授权链接' }}</a>
         </div>
-        <el-input v-model="authUrlInput" :placeholder="activeServer === 'serenity' ? '第三步：粘贴跳转后的 URL...' : '第二步：粘贴跳转后的 URL...'" :rows="2" type="textarea" />
+        <el-input v-model="authUrlInput" :placeholder="(activeServer === 'serenity' || activeServer === 'infinity') ? '第三步：粘贴跳转后的 URL...' : '第二步：粘贴跳转后的 URL...'" :rows="2" type="textarea" />
         <el-button type="primary" style="margin-top:8px; width:100%" @click="submitAuth">提交验证</el-button>
       </div>
       <div class="panel-section">
@@ -226,7 +227,7 @@
              <div class="icon-col">
                <span v-if="row.quantity > 1" class="qty-modern" style="font-size:13px">{{ row.quantity }}</span>
                <div class="img-box" style="width:32px;height:32px">
-                 <el-image :src="`https://image.evepc.163.com/Type/${row.type_id}_32.png`" class="mini-icon"/>
+                 <img :src="getTypeImageUrl(row.type_id, 32)" class="mini-icon" @error="handleTypeImageError($event, row.type_id)" />
                </div>
              </div>
           </template>
@@ -327,6 +328,8 @@ axios.interceptors.request.use(config => {
 
 const authLink = ref("")
 const scopes = "esi-assets.read_assets.v1 esi-assets.read_corporation_assets.v1 esi-characters.read_blueprints.v1 esi-corporations.read_blueprints.v1 esi-characters.read_corporation_roles.v1 esi-location.read_location.v1 esi-location.read_ship_type.v1 esi-universe.read_structures.v1".replace(/ /g, '%20')
+// infinity ESI 不支持蓝图相关 scope
+const scopesInfinity = "esi-assets.read_assets.v1 esi-assets.read_corporation_assets.v1 esi-characters.read_corporation_roles.v1 esi-location.read_location.v1 esi-location.read_ship_type.v1 esi-universe.read_structures.v1".replace(/ /g, '%20')
 
 const generateRandomString = (length) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
@@ -350,6 +353,8 @@ const setupAuthLink = async () => {
         let challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         
         authLink.value = `https://login.eveonline.com/v2/oauth/authorize?response_type=code&redirect_uri=http://localhost:8001/api/auth/callback/tranquility&client_id=c5c106a0a3f04a8e91329d24ce762825&scope=${scopes}&state=mystate&code_challenge=${challenge}&code_challenge_method=S256`
+    } else if (activeServer.value === 'infinity') {
+        authLink.value = "https://login-infinity.evepc.163.com/v2/oauth/authorize?response_type=code&redirect_uri=https://ali-esi.evepc.163.com/ui/oauth2-redirect.html&client_id=bc90aa496a404724a93f41b4f4e97761&scope=" + scopesInfinity + "&state=mystate&realm=ESI&device_id=fleet-tracker"
     } else {
         authLink.value = "https://login.evepc.163.com/v2/oauth/authorize?response_type=code&redirect_uri=https://ali-esi.evepc.163.com/ui/oauth2-redirect.html&client_id=bc90aa496a404724a93f41b4f4e97761&scope=" + scopes + "&state=mystate&realm=ESI&device_id=eve_asset_tool_v3"
     }
@@ -470,7 +475,12 @@ const removeChar = async (id) => {
   })
 }
 
-const clearLoginCache = () => { window.open("https://login.evepc.163.com/account/logoff", "_blank") }
+const clearLoginCache = () => {
+  const logoffUrl = activeServer.value === 'infinity'
+    ? "https://login-infinity.evepc.163.com/account/logoff"
+    : "https://login.evepc.163.com/account/logoff"
+  window.open(logoffUrl, "_blank")
+}
 
 const dialogVisible = ref(false)
 const containerTitle = ref('')
@@ -482,6 +492,21 @@ const openContainer = async (row) => {
 }
 
 const formatQty = (n) => n > 9999 ? (n/1000).toFixed(1)+'k' : n
+
+const getTypeImageUrl = (typeId, size = 64) => {
+  if (activeServer.value === 'tranquility' || activeServer.value === 'infinity') {
+    return `https://images.evetech.net/types/${typeId}/icon?size=${size}`
+  }
+  return `https://image.evepc.163.com/Type/${typeId}_${size}.png`
+}
+
+const handleTypeImageError = (event, typeId) => {
+  // 中文 CDN 找不到时回退到国际 CDN
+  if (!event.target.dataset.fallback) {
+    event.target.dataset.fallback = '1'
+    event.target.src = `https://images.evetech.net/types/${typeId}/icon?size=64`
+  }
+}
 
 const canOpen = (row) => {
   if (!row.is_singleton) return false
@@ -640,7 +665,7 @@ onMounted(() => {
 .icon-col { display: flex; align-items: center; gap: 12px; justify-content: flex-end; padding-right: 12px; }
 .qty-modern { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 15px; color: #fff; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
 .img-box { position: relative; width: 42px; height: 42px; flex-shrink: 0; }
-.img-box .el-image { width: 100%; height: 100%; border-radius: 4px; border: 1px solid #333; }
+.img-box .el-image, .img-box img.main-icon { width: 100%; height: 100%; border-radius: 4px; border: 1px solid #333; display: block; }
 .bp-tag { position: absolute; bottom: 0; right: 0; background: #007bff; color: white; font-size: 9px; padding: 0 2px; }
 
 .detail-col { display: flex; flex-direction: column; justify-content: center; height: 100%; gap: 4px; }

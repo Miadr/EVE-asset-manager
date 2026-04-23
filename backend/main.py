@@ -6,7 +6,7 @@ import subprocess
 import threading
 import secrets
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
@@ -45,7 +45,7 @@ def get_db_paths(server: str, lang: str = "en"):
     return os.path.join(DATA_DIR, db_name), os.path.join(DATA_DIR, sde_name)
 
 # ===== 启动自检及释出逻辑 =====
-for init_server in ['serenity', 'tranquility']:
+for init_server in ['serenity', 'tranquility', 'infinity']:
     init_db, init_sde = get_db_paths(init_server)
     
     if getattr(sys, 'frozen', False):
@@ -86,6 +86,12 @@ SERVER_CONFIG = {
         'login_base': "https://login.eveonline.com",
         'esi_base': "https://esi.evetech.net",
         'callback': "http://localhost:8001/api/auth/callback/tranquility"
+    },
+    'infinity': {
+        'client_id': "bc90aa496a404724a93f41b4f4e97761",
+        'login_base': "https://login-infinity.evepc.163.com",
+        'esi_base': "https://ali-esi.evepc.163.com",
+        'callback': "https://ali-esi.evepc.163.com/ui/oauth2-redirect.html"
     }
 }
 
@@ -94,7 +100,17 @@ REQUIRED_SCOPES = [
     "esi-assets.read_corporation_assets.v1",
     "esi-characters.read_blueprints.v1",
     "esi-corporations.read_blueprints.v1",
-    "esi-characters.read_corporation_roles.v1", 
+    "esi-characters.read_corporation_roles.v1",
+    "esi-location.read_location.v1",
+    "esi-location.read_ship_type.v1",
+    "esi-universe.read_structures.v1"
+]
+
+# infinity ESI 不支持蓝图相关 scope
+REQUIRED_SCOPES_INFINITY = [
+    "esi-assets.read_assets.v1",
+    "esi-assets.read_corporation_assets.v1",
+    "esi-characters.read_corporation_roles.v1",
     "esi-location.read_location.v1",
     "esi-location.read_ship_type.v1",
     "esi-universe.read_structures.v1"
@@ -405,7 +421,7 @@ def add_auth_char(payload: UrlPayload):
         
         cfg = SERVER_CONFIG[server]
         data = {"grant_type": "authorization_code", "code": code, "client_id": cfg['client_id']}
-        if server == 'serenity':
+        if server in ('serenity', 'infinity'):
             data["redirect_uri"] = cfg['callback']
         else:
             if payload.code_verifier:
@@ -423,14 +439,19 @@ def add_auth_char(payload: UrlPayload):
         token_data = r.json()
         access_token = token_data['access_token']
         refresh_token = token_data.get('refresh_token', access_token)
-        expiry = datetime.now() + timedelta(seconds=token_data['expires_in'])
-        
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=token_data['expires_in'])
+
         verify = requests.get(f"{cfg['login_base']}/oauth/verify", headers={"Authorization": f"Bearer {access_token}"}).json()
         char_id = verify['CharacterID']
         name = verify['CharacterName']
-        
+
         corp_id = 0
-        ds_param = "?datasource=serenity" if server == 'serenity' else "?datasource=tranquility"
+        if server == 'serenity':
+            ds_param = "?datasource=serenity"
+        elif server == 'infinity':
+            ds_param = "?datasource=infinity"
+        else:
+            ds_param = "?datasource=tranquility"
         try:
             pub = requests.get(f"{cfg['esi_base']}/latest/characters/{char_id}/{ds_param}", timeout=5)
             if pub.status_code == 200: corp_id = pub.json().get('corporation_id', 0)
@@ -459,7 +480,7 @@ def add_auth_char(payload: UrlPayload):
         
         conn.execute('''INSERT OR REPLACE INTO auth_tokens 
             (character_id, character_name, corp_id, is_director, is_corp_fetcher, access_token, refresh_token, token_expiry, scopes)
-            VALUES (?,?,?,?,?,?,?,?,?)''', (char_id, name, corp_id, is_director, is_fetcher, access_token, refresh_token, expiry, " ".join(REQUIRED_SCOPES)))
+            VALUES (?,?,?,?,?,?,?,?,?)''', (char_id, name, corp_id, is_director, is_fetcher, access_token, refresh_token, expiry, " ".join(REQUIRED_SCOPES_INFINITY if server == 'infinity' else REQUIRED_SCOPES)))
         conn.commit()
         conn.close()
         

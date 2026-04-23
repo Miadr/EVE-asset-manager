@@ -30,6 +30,10 @@ def setup_environment(server):
         DB_PATH = os.path.join(OUTPUT_DIR, 'eve_universe_tranquility.sqlite')
         ESI_BASE = "https://esi.evetech.net/latest"
         DATASOURCE = "tranquility"
+    elif server == "infinity":
+        DB_PATH = os.path.join(OUTPUT_DIR, 'eve_universe_infinity.sqlite')
+        ESI_BASE = "https://ali-esi.evepc.163.com/latest"
+        DATASOURCE = "infinity"
     else:
         DB_PATH = os.path.join(OUTPUT_DIR, 'eve_universe_serenity.sqlite')
         ESI_BASE = "https://ali-esi.evepc.163.com/latest"

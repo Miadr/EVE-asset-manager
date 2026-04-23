@@ -3,6 +3,7 @@ import requests
 import time
 import os
 import sys
+import re
 import threading
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,14 @@ ESI_BASE = "https://ali-esi.evepc.163.com/latest"
 AUTH_URL = "https://login.evepc.163.com/v2/oauth/token"
 CLIENT_ID = "bc90aa496a404724a93f41b4f4e97761"
 USER_AGENT = "EVE_Asset_Manager_Ultimate_v23_Ops"
+
+def _clean_localized_name(name):
+    """清理 EVE 本地化 XML 标签: <localized hint="Ibis">伊毕斯号*(伊毕斯号) → 伊毕斯号"""
+    if not name:
+        return name
+    name = re.sub(r'<localized[^>]*>', '', name)   # 去掉 <localized hint="..."> 前缀
+    name = re.sub(r'\*\([^)]*\)\s*$', '', name)    # 去掉末尾 *(...)
+    return name.strip() or None
 
 def get_db_conn():
     if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -109,6 +118,13 @@ class UnifiedAssetManager:
             AUTH_URL = "https://login.eveonline.com/v2/oauth/token"
             CLIENT_ID = "c5c106a0a3f04a8e91329d24ce762825"
             self.ds = "?datasource=tranquility"
+        elif self.server == 'infinity':
+            AUTH_DB = os.path.join(OUTPUT_DIR, 'user_data_infinity.sqlite')
+            SDE_DB = os.path.join(OUTPUT_DIR, 'eve_universe_infinity.sqlite')
+            ESI_BASE = "https://ali-esi.evepc.163.com/latest"
+            AUTH_URL = "https://login-infinity.evepc.163.com/v2/oauth/token"
+            CLIENT_ID = "bc90aa496a404724a93f41b4f4e97761"
+            self.ds = "?datasource=infinity"
         else:
             AUTH_DB = os.path.join(OUTPUT_DIR, 'user_data_serenity.sqlite')
             SDE_DB = os.path.join(OUTPUT_DIR, 'eve_universe_serenity.sqlite')
@@ -246,7 +262,11 @@ class UnifiedAssetManager:
             
             char_assets = self._fetch_pages_serial(f"{ESI_BASE}/characters/{char_id}/assets/{self.ds}", token, char_id, name)
             if char_assets is not None:
-                char_bp = self._fetch_pages_serial(f"{ESI_BASE}/characters/{char_id}/blueprints/{self.ds}", token, char_id, name)
+                # infinity 服务器不支持蓝图 scope，跳过避免 403 警告
+                if self.server != 'infinity':
+                    char_bp = self._fetch_pages_serial(f"{ESI_BASE}/characters/{char_id}/blueprints/{self.ds}", token, char_id, name)
+                else:
+                    char_bp = []
                 self._process_and_write(char_id, char_assets, char_bp or [], token, is_corp=False, owner_name=name)
 
             if is_director and corp_id and corp_id not in self.processed_corps:
@@ -254,7 +274,10 @@ class UnifiedAssetManager:
                 logger.info(f"Processing Corp: {corp_name}")
                 corp_assets = self._fetch_pages_serial(f"{ESI_BASE}/corporations/{corp_id}/assets/{self.ds}", token, char_id, corp_name)
                 if corp_assets is not None:
-                    corp_bp = self._fetch_pages_serial(f"{ESI_BASE}/corporations/{corp_id}/blueprints/{self.ds}", token, char_id, corp_name)
+                    if self.server != 'infinity':
+                        corp_bp = self._fetch_pages_serial(f"{ESI_BASE}/corporations/{corp_id}/blueprints/{self.ds}", token, char_id, corp_name)
+                    else:
+                        corp_bp = []
                     self._process_and_write(corp_id, corp_assets, corp_bp or [], token, is_corp=True, owner_name=corp_name)
                     self.processed_corps.add(corp_id)
 
@@ -289,8 +312,9 @@ class UnifiedAssetManager:
                     r = self.session.post(url, json=chunk, headers={"Authorization": f"Bearer {token}"}, timeout=10)
                     if r.status_code == 200:
                         for entry in r.json():
-                            if entry.get('name') and entry['name'] != "None" and entry['item_id'] in merged:
-                                merged[entry['item_id']]['name'] = entry['name']
+                            cleaned = _clean_localized_name(entry.get('name'))
+                            if cleaned and cleaned != "None" and entry['item_id'] in merged:
+                                merged[entry['item_id']]['name'] = cleaned
             except: pass
 
         conn = get_db_conn()
@@ -309,6 +333,16 @@ class UnifiedAssetManager:
 
     def run_phase_3_locations(self):
         logger.info("=== Phase 3: Locations ===")
+        # 中文服务器每次同步前清除 NPC 空间站/星系的旧缓存，确保用中文名重新拉取
+        if self.server in ('serenity', 'infinity'):
+            try:
+                conn_clr = get_db_conn()
+                conn_clr.execute("DELETE FROM structure_cache WHERE structure_id BETWEEN 30000000 AND 32999999")
+                conn_clr.execute("DELETE FROM structure_cache WHERE structure_id BETWEEN 60000000 AND 63999999")
+                conn_clr.commit()
+                conn_clr.close()
+            except Exception: pass
+
         conn = get_db_conn()
         try:
             c = conn.execute("SELECT * FROM assets")
@@ -366,6 +400,22 @@ class UnifiedAssetManager:
                 all_tokens = [r[0] for r in all_raw]
             except: pass
 
+            # Infinity 使用 Tranquility 宇宙，需从国际 ESI 获取中文名
+            # Serenity 用自己的 ESI + language=zh
+            # Tranquility 用自己的 ESI（可选 language=zh）
+            if self.server == 'infinity':
+                universe_esi = "https://esi.evetech.net/latest"
+                universe_ds  = "?datasource=tranquility"
+                lang_param   = "&language=zh"
+            elif self.server == 'serenity':
+                universe_esi = ESI_BASE
+                universe_ds  = self.ds
+                lang_param   = "&language=zh"
+            else:
+                universe_esi = ESI_BASE
+                universe_ds  = self.ds
+                lang_param   = ""
+
             new_cache = []
             for i, sid in enumerate(unknowns, 1):
                 struct_name = f"Unknown Location {sid}"
@@ -373,14 +423,14 @@ class UnifiedAssetManager:
                 
                 if 60000000 <= sid < 64000000:
                     try:
-                        r = self.session.get(f"{ESI_BASE}/universe/stations/{sid}/{self.ds}", timeout=5)
+                        r = self.session.get(f"{universe_esi}/universe/stations/{sid}/{universe_ds}{lang_param}", timeout=5)
                         if r.status_code == 200:
                             struct_name = r.json().get('name', struct_name)
                             should_cache = True
                     except: pass
                 elif 30000000 <= sid < 33000000:
                     try:
-                        r = self.session.get(f"{ESI_BASE}/universe/systems/{sid}/{self.ds}", timeout=5)
+                        r = self.session.get(f"{universe_esi}/universe/systems/{sid}/{universe_ds}{lang_param}", timeout=5)
                         if r.status_code == 200:
                             struct_name = r.json().get('name', struct_name)
                             should_cache = True
@@ -404,6 +454,7 @@ class UnifiedAssetManager:
                         except: pass
                 
                 self.location_names[sid] = struct_name
+                logger.info(f"  Resolved: {sid} → {struct_name}")
                 if should_cache: new_cache.append((sid, struct_name))
 
             if new_cache:
