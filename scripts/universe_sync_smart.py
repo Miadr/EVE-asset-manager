@@ -209,6 +209,106 @@ def fetch_names_bulk(session, type_ids, ac: AdaptiveConcurrency):
     return name_map
 
 
+def fetch_all_category_ids(session, ac: AdaptiveConcurrency) -> list:
+    url = f"{ESI_BASE}/universe/categories/?datasource={DATASOURCE}"
+    try:
+        r = session.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        logger.warning(f"Failed to fetch category IDs: {e}")
+    return []
+
+def fetch_category_details(session, cat_ids: list, ac: AdaptiveConcurrency) -> list:
+    logger.info(f"Fetching {len(cat_ids)} categories...")
+    results = []
+    lock = threading.Lock()
+
+    def fetch_one(cid):
+        try:
+            r = session.get(f"{ESI_BASE}/universe/categories/{cid}/?datasource={DATASOURCE}&language=zh", timeout=10)
+            if r.status_code == 200:
+                ac.record(True)
+                return r.json()
+            ac.record(False)
+        except Exception:
+            ac.record(False)
+        return None
+
+    with ThreadPoolExecutor(max_workers=ac.current_workers) as executor:
+        futures = {executor.submit(fetch_one, cid): cid for cid in cat_ids}
+        for future in as_completed(futures):
+            data = future.result()
+            if data:
+                with lock:
+                    results.append(data)
+    logger.info(f"Categories fetched: {len(results)}/{len(cat_ids)}")
+    return results
+
+
+def fetch_all_group_ids(session, ac: AdaptiveConcurrency) -> list:
+    url = f"{ESI_BASE}/universe/groups/?datasource={DATASOURCE}"
+    all_ids = []
+    try:
+        r = session.get(url, timeout=10)
+        r.raise_for_status()
+        total_pages = int(r.headers.get('X-Pages', 1))
+        all_ids.extend(r.json())
+
+        def fetch_page(page):
+            try:
+                resp = session.get(f"{url}&page={page}", timeout=15)
+                if resp.status_code == 200:
+                    ac.record(True)
+                    return resp.json()
+                ac.record(False)
+            except Exception:
+                ac.record(False)
+            return []
+
+        if total_pages > 1:
+            with ThreadPoolExecutor(max_workers=ac.current_workers) as executor:
+                futures = {executor.submit(fetch_page, p): p for p in range(2, total_pages + 1)}
+                for future in as_completed(futures):
+                    all_ids.extend(future.result())
+    except Exception as e:
+        logger.warning(f"Failed to fetch group IDs: {e}")
+    logger.info(f"Group IDs fetched: {len(all_ids)}")
+    return all_ids
+
+
+def fetch_group_details(session, group_ids: list, ac: AdaptiveConcurrency) -> list:
+    logger.info(f"Fetching {len(group_ids)} groups...")
+    results = []
+    lock = threading.Lock()
+    completed_count = [0]
+
+    def fetch_one(gid):
+        try:
+            r = session.get(f"{ESI_BASE}/universe/groups/{gid}/?datasource={DATASOURCE}&language=zh", timeout=10)
+            if r.status_code == 200:
+                ac.record(True)
+                return r.json()
+            ac.record(False)
+        except Exception:
+            ac.record(False)
+        return None
+
+    total = len(group_ids)
+    with ThreadPoolExecutor(max_workers=ac.current_workers) as executor:
+        futures = {executor.submit(fetch_one, gid): gid for gid in group_ids}
+        for future in as_completed(futures):
+            data = future.result()
+            with lock:
+                completed_count[0] += 1
+                if data:
+                    results.append(data)
+            if completed_count[0] % 200 == 0:
+                logger.info(f"Group detail progress: {completed_count[0]}/{total} | {ac.status()}")
+    logger.info(f"Groups fetched: {len(results)}/{total}")
+    return results
+
+
 def fetch_type_details_parallel(session, type_ids: list, ac: AdaptiveConcurrency) -> list:
     """并行拉取物品详情，支持自适应降级。"""
     logger.info(f"[4/4] Fetching details for {len(type_ids)} new items...")
@@ -283,6 +383,8 @@ def main(args=None):
 
     try:
         cursor.execute("CREATE TABLE IF NOT EXISTS invTypes (typeID INTEGER PRIMARY KEY, groupID INTEGER, typeName TEXT, typeName_en TEXT, volume REAL, mass REAL, description TEXT, source TEXT, pinyinFull TEXT, pinyinInitials TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS invCategories (categoryID INTEGER PRIMARY KEY, categoryName TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS invGroups (groupID INTEGER PRIMARY KEY, categoryID INTEGER, groupName TEXT)")
         conn.commit()
         
         cursor.execute("SELECT typeID, typeName FROM invTypes")
@@ -292,6 +394,35 @@ def main(args=None):
         logger.error(f"DB init failed: {e}")
         return
 
+    # === 同步 invCategories ===
+    try:
+        cat_ids = fetch_all_category_ids(session, ac)
+        if cat_ids:
+            ac.reset()
+            cat_details = fetch_category_details(session, cat_ids, ac)
+            cat_rows = [(d['category_id'], d.get('name', 'Unknown')) for d in cat_details if d]
+            if cat_rows:
+                cursor.executemany("INSERT OR REPLACE INTO invCategories VALUES (?,?)", cat_rows)
+                conn.commit()
+                logger.info(f"invCategories synced: {len(cat_rows)} rows.")
+    except Exception as e:
+        logger.warning(f"invCategories sync failed: {e}")
+
+    # === 同步 invGroups ===
+    try:
+        group_ids = fetch_all_group_ids(session, ac)
+        if group_ids:
+            ac.reset()
+            group_details = fetch_group_details(session, group_ids, ac)
+            grp_rows = [(d['group_id'], d.get('category_id'), d.get('name', 'Unknown')) for d in group_details if d]
+            if grp_rows:
+                cursor.executemany("INSERT OR REPLACE INTO invGroups VALUES (?,?,?)", grp_rows)
+                conn.commit()
+                logger.info(f"invGroups synced: {len(grp_rows)} rows.")
+    except Exception as e:
+        logger.warning(f"invGroups sync failed: {e}")
+
+    # === 同步 invTypes ===
     esi_ids = fetch_all_esi_ids(session, ac)
     if not esi_ids: return
     
