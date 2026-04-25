@@ -494,16 +494,28 @@ const openContainer = async (row) => {
 const formatQty = (n) => n > 9999 ? (n/1000).toFixed(1)+'k' : n
 
 const getTypeImageUrl = (typeId, size = 64) => {
-  if (activeServer.value === 'tranquility' || activeServer.value === 'infinity') {
+  if (activeServer.value === 'tranquility') {
     return `https://images.evetech.net/types/${typeId}/icon?size=${size}`
+  }
+  if (activeServer.value === 'infinity') {
+    return `https://image-infinity.evepc.163.com/Type/${typeId}_${size}.png`
   }
   return `https://image.evepc.163.com/Type/${typeId}_${size}.png`
 }
 
 const handleTypeImageError = (event, typeId) => {
-  // 中文 CDN 找不到时回退到国际 CDN
-  if (!event.target.dataset.fallback) {
+  const fallback = event.target.dataset.fallback || '0'
+  if (fallback === '0') {
+    // 曙光：降级到晨曦 CDN（同物品网易系共用）；晨曦：降级到国际 CDN
     event.target.dataset.fallback = '1'
+    if (activeServer.value === 'infinity') {
+      event.target.src = `https://image.evepc.163.com/Type/${typeId}_64.png`
+    } else {
+      event.target.src = `https://images.evetech.net/types/${typeId}/icon?size=64`
+    }
+  } else if (fallback === '1' && activeServer.value === 'infinity') {
+    // 曙光二级回退：晨曦也没有，最终用国际 CDN
+    event.target.dataset.fallback = '2'
     event.target.src = `https://images.evetech.net/types/${typeId}/icon?size=64`
   }
 }
@@ -518,6 +530,9 @@ const canOpen = (row) => {
 const getOwnerIcon = (id, is_corp) => {
   if (activeServer.value === 'tranquility') {
     return is_corp ? `https://images.evetech.net/corporations/${id}/logo?size=64` : `https://images.evetech.net/characters/${id}/portrait?size=64`
+  }
+  if (activeServer.value === 'infinity') {
+    return `https://image-infinity.evepc.163.com/${is_corp?'Corporation':'Character'}/${id}_64.${is_corp?'png':'jpg'}`
   }
   return `https://image.evepc.163.com/${is_corp?'Corporation':'Character'}/${id}_64.${is_corp?'png':'jpg'}`
 }

@@ -333,15 +333,6 @@ class UnifiedAssetManager:
 
     def run_phase_3_locations(self):
         logger.info("=== Phase 3: Locations ===")
-        # 中文服务器每次同步前清除 NPC 空间站/星系的旧缓存，确保用中文名重新拉取
-        if self.server in ('serenity', 'infinity'):
-            try:
-                conn_clr = get_db_conn()
-                conn_clr.execute("DELETE FROM structure_cache WHERE structure_id BETWEEN 30000000 AND 32999999")
-                conn_clr.execute("DELETE FROM structure_cache WHERE structure_id BETWEEN 60000000 AND 63999999")
-                conn_clr.commit()
-                conn_clr.close()
-            except Exception: pass
 
         conn = get_db_conn()
         try:
@@ -400,12 +391,11 @@ class UnifiedAssetManager:
                 all_tokens = [r[0] for r in all_raw]
             except: pass
 
-            # Infinity 使用 Tranquility 宇宙，需从国际 ESI 获取中文名
-            # Serenity 用自己的 ESI + language=zh
+            # Infinity/Serenity 用自己的 ESI + language=zh
             # Tranquility 用自己的 ESI（可选 language=zh）
             if self.server == 'infinity':
-                universe_esi = "https://esi.evetech.net/latest"
-                universe_ds  = "?datasource=tranquility"
+                universe_esi = ESI_BASE
+                universe_ds  = self.ds
                 lang_param   = "&language=zh"
             elif self.server == 'serenity':
                 universe_esi = ESI_BASE
@@ -454,7 +444,6 @@ class UnifiedAssetManager:
                         except: pass
                 
                 self.location_names[sid] = struct_name
-                logger.info(f"  Resolved: {sid} → {struct_name}")
                 if should_cache: new_cache.append((sid, struct_name))
 
             if new_cache:

@@ -57,6 +57,20 @@ for init_server in ['serenity', 'tranquility', 'infinity']:
             except Exception as e:
                 logger.error(f"[{init_server}] 默认物品数据库释放复制失败: {e}")
 
+    if not os.path.exists(init_sde):
+        try:
+            logger.info(f"[{init_server}] 未找到宇宙数据库，正在创建空白 SDE 于 {init_sde}（将由 ESI 同步填充）")
+            sde_conn = sqlite3.connect(init_sde)
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS invCategories (categoryID INTEGER PRIMARY KEY, categoryName TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS invGroups (groupID INTEGER PRIMARY KEY, categoryID INTEGER, groupName TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS invTypes (typeID INTEGER PRIMARY KEY, groupID INTEGER, typeName TEXT, typeName_en TEXT, volume REAL, mass REAL, description TEXT, source TEXT, pinyinFull TEXT, pinyinInitials TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS mapSolarSystems (solarSystemID INTEGER PRIMARY KEY, regionID INTEGER, solarSystemName TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS staStations (stationID INTEGER PRIMARY KEY, solarSystemID INTEGER, stationName TEXT)")
+            sde_conn.commit()
+            sde_conn.close()
+        except Exception as e:
+            logger.error(f"[{init_server}] 空白 SDE 创建失败: {e}")
+
     if not os.path.exists(init_db):
         try:
             logger.info(f"首测运行，发现无存档。正建立纯净的 user_data_{init_server} 数据库于 {init_db}")

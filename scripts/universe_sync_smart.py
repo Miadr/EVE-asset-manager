@@ -355,7 +355,7 @@ def fetch_type_details_parallel(session, type_ids: list, ac: AdaptiveConcurrency
 def main(args=None):
     if args is None:
         parser = argparse.ArgumentParser(description="EVE Universe Sync Script")
-        parser.add_argument("--server", choices=["serenity", "tranquility"], default="serenity")
+        parser.add_argument("--server", choices=["serenity", "tranquility", "infinity"], default="serenity")
         parser.add_argument(
             "--threads", type=int, default=50,
             help="初始最大线程数（失败率高时会自动降级，默认 50）"

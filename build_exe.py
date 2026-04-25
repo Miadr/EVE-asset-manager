@@ -41,6 +41,7 @@ def build():
         "--add-data", "frontend/dist;dist",
         "--add-data", "data/eve_universe_serenity.sqlite;data",
         "--add-data", "data/eve_universe_tranquility.sqlite;data",
+        "--add-data", "data/eve_universe_infinity.sqlite;data",
         "--icon", "frontend/dist/favicon.ico",
         "launcher.py"
     ]
