@@ -6,7 +6,7 @@ import subprocess
 import threading
 import secrets
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
@@ -45,7 +45,7 @@ def get_db_paths(server: str, lang: str = "en"):
     return os.path.join(DATA_DIR, db_name), os.path.join(DATA_DIR, sde_name)
 
 # ===== 启动自检及释出逻辑 =====
-for init_server in ['serenity', 'tranquility']:
+for init_server in ['serenity', 'tranquility', 'infinity']:
     init_db, init_sde = get_db_paths(init_server)
     
     if getattr(sys, 'frozen', False):
@@ -56,6 +56,20 @@ for init_server in ['serenity', 'tranquility']:
                 shutil.copy2(bundled_sde, init_sde)
             except Exception as e:
                 logger.error(f"[{init_server}] 默认物品数据库释放复制失败: {e}")
+
+    if not os.path.exists(init_sde):
+        try:
+            logger.info(f"[{init_server}] 未找到宇宙数据库，正在创建空白 SDE 于 {init_sde}（将由 ESI 同步填充）")
+            sde_conn = sqlite3.connect(init_sde)
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS invCategories (categoryID INTEGER PRIMARY KEY, categoryName TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS invGroups (groupID INTEGER PRIMARY KEY, categoryID INTEGER, groupName TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS invTypes (typeID INTEGER PRIMARY KEY, groupID INTEGER, typeName TEXT, typeName_en TEXT, volume REAL, mass REAL, description TEXT, source TEXT, pinyinFull TEXT, pinyinInitials TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS mapSolarSystems (solarSystemID INTEGER PRIMARY KEY, regionID INTEGER, solarSystemName TEXT)")
+            sde_conn.execute("CREATE TABLE IF NOT EXISTS staStations (stationID INTEGER PRIMARY KEY, solarSystemID INTEGER, stationName TEXT)")
+            sde_conn.commit()
+            sde_conn.close()
+        except Exception as e:
+            logger.error(f"[{init_server}] 空白 SDE 创建失败: {e}")
 
     if not os.path.exists(init_db):
         try:
@@ -86,6 +100,12 @@ SERVER_CONFIG = {
         'login_base': "https://login.eveonline.com",
         'esi_base': "https://esi.evetech.net",
         'callback': "http://localhost:8001/api/auth/callback/tranquility"
+    },
+    'infinity': {
+        'client_id': "bc90aa496a404724a93f41b4f4e97761",
+        'login_base': "https://login-infinity.evepc.163.com",
+        'esi_base': "https://ali-esi.evepc.163.com",
+        'callback': "https://ali-esi.evepc.163.com/ui/oauth2-redirect.html"
     }
 }
 
@@ -94,7 +114,17 @@ REQUIRED_SCOPES = [
     "esi-assets.read_corporation_assets.v1",
     "esi-characters.read_blueprints.v1",
     "esi-corporations.read_blueprints.v1",
-    "esi-characters.read_corporation_roles.v1", 
+    "esi-characters.read_corporation_roles.v1",
+    "esi-location.read_location.v1",
+    "esi-location.read_ship_type.v1",
+    "esi-universe.read_structures.v1"
+]
+
+# infinity ESI 不支持蓝图相关 scope
+REQUIRED_SCOPES_INFINITY = [
+    "esi-assets.read_assets.v1",
+    "esi-assets.read_corporation_assets.v1",
+    "esi-characters.read_corporation_roles.v1",
     "esi-location.read_location.v1",
     "esi-location.read_ship_type.v1",
     "esi-universe.read_structures.v1"
@@ -118,6 +148,14 @@ def get_db_connection(server: str, lang: str = "en"):
         conn.execute(f"ATTACH DATABASE '{sde_path}' AS sde")
     return conn
 
+def get_sde_tables(conn) -> set:
+    """返回已附加的 SDE 数据库中实际存在的表名集合"""
+    try:
+        rows = conn.execute("SELECT name FROM sde.sqlite_master WHERE type='table'").fetchall()
+        return {row[0] for row in rows}
+    except Exception:
+        return set()
+
 
 import logging
 
@@ -135,7 +173,7 @@ class ProgressHandler(logging.Handler):
             sync_status[self.key]["has_error"] = True
 
 # 挂载自定义钩子截获底层旧脚本输出
-for key, logger_name in [("assets", "AssetWorker"), ("universe", "UniSync")]:
+for key, logger_name in [("assets", "AssetWorker"), ("universe", "UniverseSync")]:
     l = logging.getLogger(logger_name)
     h = ProgressHandler(key)
     h.setFormatter(logging.Formatter('%(message)s'))
@@ -157,7 +195,7 @@ def run_script_process(script_type, server):
             am.UnifiedAssetManager(args=am_args).run()
         elif script_type == 'universe':
             import argparse
-            us_args = argparse.Namespace(server=server)
+            us_args = argparse.Namespace(server=server, threads=50, min_threads=2, fail_rate=0.3)
             uss.main(us_args)
         logger.info(f"Script process finished: {script_type}")
     except Exception as e:
@@ -181,6 +219,12 @@ def get_filters(server: str = "serenity", lang: str = "en"):
     conn = get_db_connection(server, lang)
     cursor = conn.cursor()
     try:
+        sde_tables = get_sde_tables(conn)
+        has_stations   = 'staStations'   in sde_tables
+        has_systems    = 'mapSolarSystems' in sde_tables
+        has_groups     = 'invGroups'      in sde_tables
+        has_categories = 'invCategories'  in sde_tables
+
         cursor.execute("""
             SELECT DISTINCT a.owner_id, a.is_corp, 
                    COALESCE(oc.name, 'Corp ' || a.owner_id) as name
@@ -189,24 +233,42 @@ def get_filters(server: str = "serenity", lang: str = "en"):
         """)
         owners = [dict(row) for row in cursor.fetchall()]
 
-        cursor.execute("""
-            SELECT COALESCE((SELECT stationName FROM sde.staStations WHERE stationID = location_id), (SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID=location_id), location_name) as location_name, COUNT(*) as count 
-            FROM assets 
-            WHERE is_ship_fitted = 0 
-            GROUP BY COALESCE((SELECT stationName FROM sde.staStations WHERE stationID = location_id), (SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID=location_id), location_name)
-            ORDER BY count DESC
-        """)
+        # 位置名：优先 SDE 表查询，否则直接用 assets.location_name（worker 已写入）
+        if has_stations and has_systems:
+            loc_sql = """
+                SELECT COALESCE(
+                    (SELECT stationName FROM sde.staStations WHERE stationID = location_id),
+                    (SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID = location_id),
+                    location_name
+                ) as location_name, COUNT(*) as count
+                FROM assets WHERE is_ship_fitted = 0
+                GROUP BY 1 ORDER BY count DESC
+            """
+        else:
+            loc_sql = """
+                SELECT COALESCE(location_name, 'Unknown Location ' || location_id) as location_name,
+                       COUNT(*) as count
+                FROM assets WHERE is_ship_fitted = 0
+                GROUP BY location_name ORDER BY count DESC
+            """
+        cursor.execute(loc_sql)
         locations = [dict(row) for row in cursor.fetchall()]
-        
-        cursor.execute("""
-            SELECT DISTINCT c.categoryID, c.categoryName
-            FROM assets a
-            JOIN sde.invTypes t ON a.type_id = t.typeID
-            JOIN sde.invGroups g ON t.groupID = g.groupID
-            JOIN sde.invCategories c ON g.categoryID = c.categoryID
-            ORDER BY c.categoryName
-        """)
-        categories = [dict(row) for row in cursor.fetchall()]
+
+        # 分类：需要 invTypes + invGroups + invCategories 同时存在
+        categories = []
+        if has_groups and has_categories:
+            try:
+                cursor.execute("""
+                    SELECT DISTINCT c.categoryID, c.categoryName
+                    FROM assets a
+                    JOIN sde.invTypes t ON a.type_id = t.typeID
+                    JOIN sde.invGroups g ON t.groupID = g.groupID
+                    JOIN sde.invCategories c ON g.categoryID = c.categoryID
+                    ORDER BY c.categoryName
+                """)
+                categories = [dict(row) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.warning(f"Categories query failed: {e}")
 
         return {"owners": owners, "locations": locations, "categories": categories}
     except Exception as e:
@@ -231,17 +293,33 @@ def search_assets(
     conn = get_db_connection(server, lang)
     cursor = conn.cursor()
     offset = (page - 1) * limit
-    
-    base_joins = """
-        FROM assets a
-        LEFT JOIN sde.invTypes t ON a.type_id = t.typeID
-        LEFT JOIN sde.invGroups g ON t.groupID = g.groupID
-        LEFT JOIN sde.invCategories c ON g.categoryID = c.categoryID
-        LEFT JOIN owners_cache oc ON a.owner_id = oc.owner_id
-        LEFT JOIN assets parent ON a.location_id = parent.item_id
-        LEFT JOIN sde.invTypes pt ON parent.type_id = pt.typeID
-    """
-    
+
+    sde_tables = get_sde_tables(conn)
+    has_inv_types  = 'invTypes'      in sde_tables
+    has_groups     = 'invGroups'     in sde_tables
+    has_categories = 'invCategories' in sde_tables
+    has_stations   = 'staStations'   in sde_tables
+    has_systems    = 'mapSolarSystems' in sde_tables
+
+    # 构建 JOIN（按实际存在的表决定）
+    base_joins = "FROM assets a"
+    if has_inv_types:
+        base_joins += "\n        LEFT JOIN sde.invTypes t ON a.type_id = t.typeID"
+    if has_groups:
+        base_joins += "\n        LEFT JOIN sde.invGroups g ON t.groupID = g.groupID"
+    if has_categories:
+        base_joins += "\n        LEFT JOIN sde.invCategories c ON g.categoryID = c.categoryID"
+    base_joins += "\n        LEFT JOIN owners_cache oc ON a.owner_id = oc.owner_id"
+    base_joins += "\n        LEFT JOIN assets parent ON a.location_id = parent.item_id"
+    if has_inv_types:
+        base_joins += "\n        LEFT JOIN sde.invTypes pt ON parent.type_id = pt.typeID"
+
+    # 位置名表达式
+    if has_stations and has_systems:
+        loc_expr = "COALESCE((SELECT stationName FROM sde.staStations WHERE stationID = a.location_id), (SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID = a.location_id), a.location_name)"
+    else:
+        loc_expr = "COALESCE(a.location_name, 'Unknown Location ' || a.location_id)"
+
     where_clause = "WHERE 1=1"
     params = []
     
@@ -254,9 +332,9 @@ def search_assets(
             where_clause += f" AND a.owner_id IN ({','.join(['?']*len(ids))})"
             params.extend(ids)
         if location_name:
-            where_clause += " AND COALESCE((SELECT stationName FROM sde.staStations WHERE stationID = a.location_id), (SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID=a.location_id), a.location_name) = ?"
+            where_clause += f" AND {loc_expr} = ?"
             params.append(location_name)
-        if category_id:
+        if category_id and has_categories:
             where_clause += " AND c.categoryID = ?"
             params.append(category_id)
         if not include_fitted:
@@ -264,23 +342,26 @@ def search_assets(
 
         if q and q.strip():
             q_str = f"%{q.strip().lower()}%"
-            where_clause += """ AND (
-                t.typeName LIKE ? OR t.pinyinFull LIKE ? OR t.pinyinInitials LIKE ? OR
-                a.name LIKE ? OR COALESCE((SELECT stationName FROM sde.staStations WHERE stationID = a.location_id), (SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID=a.location_id), a.location_name) LIKE ? OR
-                g.groupName LIKE ? OR c.categoryName LIKE ?
-            )"""
-            params.extend([q_str, q_str, q_str, q_str, q_str, q_str, q_str])
+            conds = ["t.typeName LIKE ?", "t.pinyinFull LIKE ?", "t.pinyinInitials LIKE ?",
+                     "a.name LIKE ?", f"{loc_expr} LIKE ?"] if has_inv_types else [f"{loc_expr} LIKE ?", "a.name LIKE ?"]
+            if has_groups:
+                conds.append("g.groupName LIKE ?")
+            if has_categories:
+                conds.append("c.categoryName LIKE ?")
+            where_clause += f" AND ({' OR '.join(conds)})"
+            params.extend([q_str] * len(conds))
 
     try:
         count_sql = f"SELECT COUNT(*) {base_joins} {where_clause}"
         cursor.execute(count_sql, params)
         total_records = cursor.fetchone()[0]
 
+        type_name_col = "t.typeName" if has_inv_types else "NULL"
         stats_sql = f"""
-            SELECT t.typeName, SUM(a.quantity) as total_qty 
+            SELECT {type_name_col}, SUM(a.quantity) as total_qty 
             {base_joins} 
             {where_clause} 
-            GROUP BY t.typeName 
+            GROUP BY {type_name_col}
             ORDER BY total_qty DESC
         """
         cursor.execute(stats_sql, params)
@@ -291,15 +372,16 @@ def search_assets(
         data_sql = f"""
             SELECT 
                 a.item_id, a.type_id, a.owner_id, a.is_corp, 
-                a.quantity, COALESCE((SELECT stationName FROM sde.staStations WHERE stationID = a.location_id), (SELECT solarSystemName FROM sde.mapSolarSystems WHERE solarSystemID=a.location_id), a.location_name) as location_name, a.location_id, a.name as custom_name,
+                a.quantity, {loc_expr} as location_name, a.location_id, a.name as custom_name,
                 a.is_singleton, a.is_blueprint, a.is_ship_fitted, a.root_item_id,
-                t.typeName, t.pinyinFull, t.pinyinInitials,
-                g.groupName, g.groupID, c.categoryID,
+                {'t.typeName, t.pinyinFull, t.pinyinInitials,' if has_inv_types else 'NULL as typeName, NULL as pinyinFull, NULL as pinyinInitials,'}
+                {'g.groupName, g.groupID,' if has_groups else 'NULL as groupName, NULL as groupID,'}
+                {'c.categoryID,' if has_categories else 'NULL as categoryID,'}
                 COALESCE(oc.name, 'Corp ' || a.owner_id) as owner_name,
-                COALESCE(parent.name, pt.typeName) as parent_container_name
+                COALESCE(parent.name, {'pt.typeName' if has_inv_types else 'NULL'}) as parent_container_name
             {base_joins}
             {where_clause}
-            ORDER BY a.location_name, t.typeName 
+            ORDER BY a.location_name, {'t.typeName' if has_inv_types else 'a.type_id'}
             LIMIT ? OFFSET ?
         """
         cursor.execute(data_sql, params + [limit, offset])
@@ -353,7 +435,7 @@ def add_auth_char(payload: UrlPayload):
         
         cfg = SERVER_CONFIG[server]
         data = {"grant_type": "authorization_code", "code": code, "client_id": cfg['client_id']}
-        if server == 'serenity':
+        if server in ('serenity', 'infinity'):
             data["redirect_uri"] = cfg['callback']
         else:
             if payload.code_verifier:
@@ -371,14 +453,19 @@ def add_auth_char(payload: UrlPayload):
         token_data = r.json()
         access_token = token_data['access_token']
         refresh_token = token_data.get('refresh_token', access_token)
-        expiry = datetime.now() + timedelta(seconds=token_data['expires_in'])
-        
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=token_data['expires_in'])
+
         verify = requests.get(f"{cfg['login_base']}/oauth/verify", headers={"Authorization": f"Bearer {access_token}"}).json()
         char_id = verify['CharacterID']
         name = verify['CharacterName']
-        
+
         corp_id = 0
-        ds_param = "?datasource=serenity" if server == 'serenity' else "?datasource=tranquility"
+        if server == 'serenity':
+            ds_param = "?datasource=serenity"
+        elif server == 'infinity':
+            ds_param = "?datasource=infinity"
+        else:
+            ds_param = "?datasource=tranquility"
         try:
             pub = requests.get(f"{cfg['esi_base']}/latest/characters/{char_id}/{ds_param}", timeout=5)
             if pub.status_code == 200: corp_id = pub.json().get('corporation_id', 0)
@@ -407,7 +494,7 @@ def add_auth_char(payload: UrlPayload):
         
         conn.execute('''INSERT OR REPLACE INTO auth_tokens 
             (character_id, character_name, corp_id, is_director, is_corp_fetcher, access_token, refresh_token, token_expiry, scopes)
-            VALUES (?,?,?,?,?,?,?,?,?)''', (char_id, name, corp_id, is_director, is_fetcher, access_token, refresh_token, expiry, " ".join(REQUIRED_SCOPES)))
+            VALUES (?,?,?,?,?,?,?,?,?)''', (char_id, name, corp_id, is_director, is_fetcher, access_token, refresh_token, expiry, " ".join(REQUIRED_SCOPES_INFINITY if server == 'infinity' else REQUIRED_SCOPES)))
         conn.commit()
         conn.close()
         
